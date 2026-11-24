@@ -55,7 +55,7 @@ Every device has its own client, credentials, cookie jar, and token-bucket rate 
 
 `vs_http_stats` explicitly enables `/api/fortiview/get_vs_http`; numeric fields from `category_0` through `category_3` become the separate measurement `virtualServerHttpStats`. Counters encoded as numeric strings are accepted as well. Counter names retain the spelling returned by the appliance. `total_sessions` and other appliance values are passed through without assuming they are lifetime counters; no rates are derived.
 
-Collectors send typed `metric.Metric` structs through a bounded, blocking queue. A shared batcher groups up to `batch_size` metrics (default 500), flushing no later than `flush_interval` seconds (default 1) after the first metric arrives, provided a publish worker is available. Publish workers format each batch as newline-separated Influx line protocol with nanosecond timestamps and deliver the batch to every configured writer. HTTP writers use POST. Integers retain their precision. Multiple workers can deliver out of order. Delivery is in-memory, best effort: failed POSTs are logged and their batches discarded, with no automatic POST retries, durable spool, or exactly-once guarantee. One unavailable device does not stop others. A slow sink causes backpressure. The batcher hands batches directly to workers without an extra buffered batch queue. A full queue or busy workers may extend delivery latency beyond the flush interval. Shutdown and `-once` flush the final partial batch within the existing 30-second drain deadline. Empty batches are never posted; invalid metrics are reported and skipped without losing valid metrics in the same batch. Set `batch_size: 1` to restore one metric per POST.
+Collectors send typed `metric.Metric` structs through a bounded, blocking queue. A shared batcher groups up to `batch_size` metrics (default 500), flushing no later than `flush_interval` seconds (default 1) after the first metric arrives, provided a publish worker is available. Publish workers format each batch as newline-separated Influx line protocol with nanosecond timestamps and deliver the batch to every configured writer. HTTP writers use POST. FortiADC numeric fields in both VS measurements are emitted as floats, including whole-number values. This keeps their InfluxDB field types consistent across scrapes. Integers above 2⁵³ can lose precision as floats. The locally generated `health` code is emitted as an integer. Multiple workers can deliver out of order. Delivery is in-memory, best effort: failed POSTs are logged and their batches discarded, with no automatic POST retries, durable spool, or exactly-once guarantee. One unavailable device does not stop others. A slow sink causes backpressure. The batcher hands batches directly to workers without an extra buffered batch queue. A full queue or busy workers may extend delivery latency beyond the flush interval. Shutdown and `-once` flush the final partial batch within the existing 30-second drain deadline. Empty batches are never posted; invalid metrics are reported and skipped without losing valid metrics in the same batch. Set `batch_size: 1` to restore one metric per POST.
 
 To trace HTTP counter collection, run `fortimetrics -config fortimetrics.yml -once -log-level debug`. Startup logs show whether `vs_http_stats` is enabled for each target. Debug logs show the per-VS requests and how many counters were collected. Request failures and responses without counters are logged with the target and VS. Add a stdout writer to see the resulting Influx lines. Zap logs go to stderr. The default log level is `info`; `warn` and `error` are also supported.
 
@@ -88,7 +88,7 @@ Tagged releases publish Linux amd64 and arm64 images to GitHub Container Registr
 ```sh
 docker run --rm -e FORTIADC_PASSWORD \
   -v "$PWD/fortimetrics.yml:/etc/fortimetrics/config.yml:ro" \
-  ghcr.io/mihudec/fortimetrics:0.1.1
+  ghcr.io/mihudec/fortimetrics:0.1.2
 ```
 
 Pass your API-key environment variable instead if the target uses one. Use a Telegraf address reachable from the container. The container runs as UID 65532, which needs read access to the mounted YAML and any CA bundle.
@@ -98,11 +98,11 @@ Pass your API-key environment variable instead if the target uses one. Use a Tel
 Build from a checkout with Go 1.27.4. Go downloads the public `github.com/mihudec/gohttp` module at `v0.1.0`.
 
 ```sh
-make build VERSION=0.1.1    # dist/{macos,linux}/{amd64,arm64}/fortimetrics
+make build VERSION=0.1.2    # dist/{macos,linux}/{amd64,arm64}/fortimetrics
 make test                  # Go tests
 make check                 # go vet and race tests
 make clean                 # Remove dist/
 docker build -t fortimetrics:local .
 ```
 
-CI runs `make check` and builds and smoke-tests the container. Pushing an unprefixed version tag such as `0.1.1` builds the release binaries and checksums, publishes the multi-platform image under the full version and major/minor tags, and attaches the binaries to the GitHub release. Local tests use simulated FortiADC and Telegraf servers.
+CI runs `make check` and builds and smoke-tests the container. Pushing an unprefixed version tag such as `0.1.2` builds the release binaries and checksums, publishes the multi-platform image under the full version and major/minor tags, and attaches the binaries to the GitHub release. Local tests use simulated FortiADC and Telegraf servers.

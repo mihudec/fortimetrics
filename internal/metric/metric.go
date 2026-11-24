@@ -73,6 +73,11 @@ func (m Metric) Line() (string, error) {
 			b.WriteString(strconv.FormatBool(v))
 		case int64:
 			b.WriteString(strconv.FormatInt(v, 10) + "i")
+		case float64:
+			if math.IsNaN(v) || math.IsInf(v, 0) {
+				return "", fmt.Errorf("invalid number")
+			}
+			b.WriteString(strconv.FormatFloat(v, 'g', -1, 64))
 		case json.Number:
 			if n, e := v.Int64(); e == nil {
 				b.WriteString(strconv.FormatInt(n, 10) + "i")

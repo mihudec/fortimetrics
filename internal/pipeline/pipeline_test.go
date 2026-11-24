@@ -44,13 +44,13 @@ func TestCollectionAndFanout(t *testing.T) {
 					if r.URL.Query().Get("vsname") != "test vs" {
 						t.Error("wrong VS")
 					}
-					io.WriteString(w, `{"payload":{"current_sessions":14,"total_sessions":9007199254740993}}`)
+					io.WriteString(w, `{"payload":{"app_response":0,"client_rtt":0.25,"current_sessions":14,"total_sessions":37}}`)
 				case "/api/fortiview/get_vs_http":
 					if r.URL.Query().Get("vs") != "test vs" {
 						t.Error("HTTP statistics requested for the wrong VS")
 					}
 					optional.Add(1)
-					io.WriteString(w, `{"payload":{"category_0":{"requests":"9007199254740993","label":"ignored"},"category_1":{"succ_response":9},"category_2":null,"category_3":{}}}`)
+					io.WriteString(w, `{"payload":{"category_0":{"requests":"42","label":"ignored"},"category_1":{"succ_response":9},"category_2":null,"category_3":{}}}`)
 				default:
 					t.Errorf("unexpected path %s", r.URL.Path)
 					w.WriteHeader(404)
@@ -112,11 +112,12 @@ func TestCollectionAndFanout(t *testing.T) {
 				}
 				joined := strings.Join(lines, "")
 				if httpStats && (!strings.Contains(joined, "virtualServerHttpStats,") ||
-					!strings.Contains(joined, "requests=9007199254740993i,succ_response=9i") ||
+					!strings.Contains(joined, "requests=42,succ_response=9 ") ||
 					strings.Contains(joined, "label=")) {
 					t.Fatalf("unexpected HTTP counters: %s", joined)
 				}
-				if !strings.Contains(joined, "total_sessions=9007199254740993i") || !strings.Contains(joined, `virtualServerName=test\ vs`) || !strings.Contains(joined, `availability="HEALTHY"`) {
+				if !strings.Contains(joined, `virtualServerName=test\ vs app_response=0,availability="HEALTHY",client_rtt=0.25,current_sessions=14,health=0i,`) ||
+					!strings.Contains(joined, "total_sessions=37 ") {
 					t.Fatalf("bad output %s", joined)
 				}
 			}

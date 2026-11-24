@@ -71,7 +71,7 @@ jobs:
             COMMIT=${{ github.sha }}
             BUILD_DATE=${{ fromJSON(steps.metadata.outputs.json).labels['org.opencontainers.image.created'] }}
           cache-from: type=gha,scope=release
-          cache-to: type=gha,scope=release,mode=max
+          cache-to: type=gha,scope=release,mode=max,ignore-error=true
           provenance: mode=max
           sbom: true
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -147,14 +148,28 @@ type virtualServer struct {
 	Availability string `json:"availability"`
 }
 
-func numericFields(data map[string]any) map[string]any {
-	result := map[string]any{}
-	for k, v := range data {
-		if _, ok := v.(json.Number); ok {
-			result[k] = v
+var numericString = regexp.MustCompile(`^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?$`)
+
+// FortiADC can send the same counter as an integer, a decimal, or a string.
+// Normalize them to floats so the Influx field type stays consistent.
+func addNumericFields(fields, data map[string]any) {
+	for key, value := range data {
+		var number json.Number
+		switch v := value.(type) {
+		case json.Number:
+			number = v
+		case string:
+			if !numericString.MatchString(v) {
+				continue
+			}
+			number = json.Number(v)
+		default:
+			continue
+		}
+		if f, err := number.Float64(); err == nil && !math.IsInf(f, 0) && !math.IsNaN(f) {
+			fields[key] = f
 		}
 	}
-	return result
 }
 
 func (c *Client) sessionToken(ctx context.Context, rejected string, refresh bool) (string, error) {
@@ -261,9 +276,7 @@ func (c *Client) collectVS(ctx context.Context, vs virtualServer, emit func(metr
 	if e != nil {
 		errs = append(errs, e)
 	} else {
-		for k, v := range numericFields(stats) {
-			fields[k] = v
-		}
+		addNumericFields(fields, stats)
 	}
 	if ctx.Err() != nil {
 		return ctx.Err()
@@ -309,10 +322,6 @@ func (c *Client) collectVS(ctx context.Context, vs virtualServer, emit func(metr
 	return errors.Join(errs...)
 }
 
-// Accept counters encoded as JSON numbers or numeric strings, preserving
-// integer precision and excluding labels and other descriptive fields.
-var httpCounter = regexp.MustCompile(`^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?$`)
-
 func (c *Client) readHTTPStats(ctx context.Context, name string) (map[string]any, error) {
 	const path = "/api/fortiview/get_vs_http"
 	c.log.Debugw("fetching VS HTTP statistics", "vs", name, "endpoint", path)
@@ -323,16 +332,7 @@ func (c *Client) readHTTPStats(ctx context.Context, name string) (map[string]any
 	fields := make(map[string]any)
 	for i := 0; i < 4; i++ {
 		category, _ := categories[fmt.Sprintf("category_%d", i)].(map[string]any)
-		for key, value := range category {
-			switch n := value.(type) {
-			case json.Number:
-				fields[key] = n
-			case string:
-				if httpCounter.MatchString(n) {
-					fields[key] = json.Number(n)
-				}
-			}
-		}
+		addNumericFields(fields, category)
 	}
 	if len(fields) == 0 {
 		return nil, fmt.Errorf("VS HTTP statistics: %s returned no numeric counters in category_0 through category_3", path)
