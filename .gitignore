@@ -1,0 +1,6 @@
+/bin/
+/dist/
+/fortimetrics.yml
+*.har
+.DS_Store
+/.codex/

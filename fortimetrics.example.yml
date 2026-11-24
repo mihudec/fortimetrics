@@ -1,0 +1,39 @@
+config:
+  queue_size: 1024
+  publish_workers: 2
+  batch_size: 500 # maximum metrics per POST
+  flush_interval: 1 # seconds from first metric in a batch
+  targets:
+    - type: fortiadc
+      hostname: adc-01
+      base_url: https://192.0.2.10
+      # For REST API admin authentication, replace username/password_env with:
+      # api_key_env: FORTIADC_API_KEY
+      # A literal api_key is also supported.
+      username: metrics
+      password_env: FORTIADC_PASSWORD
+      verify_ssl: true
+      # ca_file: /etc/fortimetrics/company-ca.pem
+      # proxy: http://proxy.example.com:8080
+      # proxy: "" # force direct connections
+      vdom: root
+      scrape_interval: 30 # seconds after each completed VS poll
+      scrape_jitter: 0.1 # +/-10%; 0 disables interval jitter
+      max_sessions: 10 # maximum in-flight requests per device
+      timeout: 15 # seconds per HTTP request
+      requests_per_second: 5
+      burst: 1
+      virtual_servers: ['.*'] # regexes match from the start, as in Python
+      tags:
+        site: dc1
+      scrape_configs:
+        - topic: vs_status # base metrics are always collected
+        # - topic: vs_http_stats
+  writers:
+    - type: http
+      url: http://127.0.0.1:8186/write
+      # ca_file: /etc/fortimetrics/telegraf-ca.pem
+      # proxy: http://proxy.example.com:8080
+      method: POST
+      timeout: 15
+    # - type: stdout
