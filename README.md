@@ -83,26 +83,26 @@ Configure a Telegraf HTTP listener accepting Influx line protocol:
 
 ## Docker
 
-Tagged releases publish Linux amd64 and arm64 images to GitHub Container Registry. Authenticate to `ghcr.io` with an account that has package access, then run:
+Tagged releases publish Linux amd64 and arm64 images to GitHub Container Registry. If the package is private, sign in to `ghcr.io` before running the image.
 
 ```sh
 docker run --rm -e FORTIADC_PASSWORD \
   -v "$PWD/fortimetrics.yml:/etc/fortimetrics/config.yml:ro" \
-  ghcr.io/mihudec/fortimetrics:0.1.0
+  ghcr.io/mihudec/fortimetrics:0.1.1
 ```
 
 Pass your API-key environment variable instead if the target uses one. Use a Telegraf address reachable from the container. The container runs as UID 65532, which needs read access to the mounted YAML and any CA bundle.
 
 ## Build and test
 
-Build from a checkout with Go 1.27.4. The [gohttp snapshot](third_party/gohttp/README.md) is included for reproducible builds.
+Build from a checkout with Go 1.27.4. Go downloads the public `github.com/mihudec/gohttp` module at `v0.1.0`.
 
 ```sh
-make build VERSION=0.1.0    # dist/{macos,linux}/{amd64,arm64}/fortimetrics
+make build VERSION=0.1.1    # dist/{macos,linux}/{amd64,arm64}/fortimetrics
 make test                  # Go tests
 make check                 # go vet and race tests
 make clean                 # Remove dist/
 docker build -t fortimetrics:local .
 ```
 
-CI runs `make check` and builds and smoke-tests the container. Pushing an unprefixed version tag such as `0.1.0` builds the release binaries and checksums, publishes the multi-platform image under the full version and major/minor tags, and attaches the binaries to the GitHub release. Local tests use simulated FortiADC and Telegraf servers.
+CI runs `make check` and builds and smoke-tests the container. Pushing an unprefixed version tag such as `0.1.1` builds the release binaries and checksums, publishes the multi-platform image under the full version and major/minor tags, and attaches the binaries to the GitHub release. Local tests use simulated FortiADC and Telegraf servers.

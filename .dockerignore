@@ -5,6 +5,3 @@
 !cmd/**
 !internal/
 !internal/**
-!third_party/
-!third_party/gohttp/
-!third_party/gohttp/**

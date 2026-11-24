@@ -6,8 +6,7 @@ ARG COMMIT=none
 ARG BUILD_DATE=unknown
 WORKDIR /src
 COPY go.mod go.sum ./
-COPY third_party/gohttp ./third_party/gohttp
-RUN go mod download
+RUN apk add --no-cache git && go mod download
 COPY cmd ./cmd
 COPY internal ./internal
 RUN CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="$TARGETARCH" go build -trimpath \
