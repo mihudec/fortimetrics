@@ -76,7 +76,7 @@ func TestIndependentPollingAndDiscovery(t *testing.T) {
 	go func() {
 		defer close(done)
 		c.poll(ctx, 5*time.Millisecond, 100*time.Millisecond, 0, func(m metric.Metric) error {
-			if m.Tags["virtualServerName"] == "fast" && m.Fields["health"] == int64(5) {
+			if m.Tags["virtualServerName"] == "fast" && m.Fields["health"] == float64(5) {
 				select {
 				case updated <- struct{}{}:
 				default:

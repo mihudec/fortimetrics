@@ -299,7 +299,7 @@ func (c *Client) collectVS(ctx context.Context, vs virtualServer, emit func(metr
 	delete(fields, "availability")
 	if err == nil {
 		fields["availability"] = current.Availability
-		fields["health"] = health(current.Availability)
+		fields["health"] = float64(health(current.Availability))
 	}
 	if len(fields) > 0 {
 		if e = emit(metric.Metric{Measurement: "virtualServerStatus", Tags: tags, Fields: fields, Timestamp: time.Now()}); e != nil {

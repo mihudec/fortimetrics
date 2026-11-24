@@ -116,7 +116,7 @@ func TestCollectionAndFanout(t *testing.T) {
 					strings.Contains(joined, "label=")) {
 					t.Fatalf("unexpected HTTP counters: %s", joined)
 				}
-				if !strings.Contains(joined, `virtualServerName=test\ vs app_response=0,availability="HEALTHY",client_rtt=0.25,current_sessions=14,health=0i,`) ||
+				if !strings.Contains(joined, `virtualServerName=test\ vs app_response=0,availability="HEALTHY",client_rtt=0.25,current_sessions=14,health=0,`) ||
 					!strings.Contains(joined, "total_sessions=37 ") {
 					t.Fatalf("bad output %s", joined)
 				}
