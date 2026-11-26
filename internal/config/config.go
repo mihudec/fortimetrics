@@ -47,6 +47,7 @@ type Target struct {
 	Patterns          []*regexp.Regexp  `yaml:"-"`
 }
 type Scrape struct {
+	MaxSessions    *int              `yaml:"max_sessions"`
 	Topic          string            `yaml:"topic"`
 	Tags           map[string]string `yaml:"tags"`
 	VirtualServers []string          `yaml:"virtual_servers"`
@@ -185,6 +186,14 @@ func Load(r io.Reader) (Config, error) {
 			if s.VirtualServers != nil && s.Topic != "rs_status" {
 				return c, fmt.Errorf("target %d: topic %q does not support virtual_servers", i, s.Topic)
 			}
+			if s.MaxSessions != nil {
+				if s.Topic != "rs_status" {
+					return c, fmt.Errorf("target %d: topic %q does not support max_sessions", i, s.Topic)
+				}
+				if n := *s.MaxSessions; n < 1 || n > t.MaxSessions {
+					return c, fmt.Errorf("target %d: rs_status max_sessions must be between 1 and target max_sessions (%d)", i, t.MaxSessions)
+				}
+			}
 			s.patterns, err = compileVSPatterns(s.VirtualServers)
 			if err != nil {
 				return c, fmt.Errorf("target %d, topic %q: %w", i, s.Topic, err)
@@ -250,6 +259,13 @@ func (t Target) RealServerStats() (Scrape, bool) {
 		}
 	}
 	return Scrape{}, false
+}
+
+func (s Scrape) SessionLimit() int {
+	if s.MaxSessions == nil {
+		return 1
+	}
+	return *s.MaxSessions
 }
 
 func (s Scrape) Matches(name string) bool {

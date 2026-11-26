@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1
+
+- Added topic-level `max_sessions` for `rs_status`. Real-server workers use slots from the target’s shared concurrency limit and share its request rate limit. The topic defaults to one worker.
+- Startup logs now show whether real-server polling is enabled. Discovery logs list the virtual servers selected for VS and real-server polling.
+- Renamed the generated `ip` tag to `virtualServerIP` on `virtualServerStatus` and `virtualServerHttpStats`, and to `realServerIP` on `realServerStatus`. Update queries and dashboards that use the old tag for new data.
+
 ## 0.2.0
 
 - Added opt-in `rs_status` collection. Fortimetrics discovers pool members from the FortiADC topology and polls each matching member directly, publishing the snapshot and topology health as `realServerStatus`.

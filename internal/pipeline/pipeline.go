@@ -138,7 +138,9 @@ func Run(ctx context.Context, c config.Config, once bool) error {
 		go func() {
 			defer collectors.Done()
 			t := c.Targets[i]
-			log.Infow("collecting FortiADC metrics", "target", t.Hostname, "vdom", t.VDOM, "vs_http_stats", t.HTTPStats())
+			_, rsEnabled := t.RealServerStats()
+			log.Infow("collecting FortiADC metrics", "target", t.Hostname, "vdom", t.VDOM,
+				"vs_http_stats", t.HTTPStats(), "rs_status", rsEnabled)
 			emit := func(m metric.Metric) error {
 				select {
 				case queue <- m:

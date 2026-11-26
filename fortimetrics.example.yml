@@ -31,6 +31,7 @@ config:
         # - topic: vs_http_stats
         # - topic: rs_status
         #   virtual_servers: ['^VS_PROD_']
+        #   max_sessions: 5 # within the target's shared limit (default: 1)
   writers:
     - type: http
       url: http://127.0.0.1:8186/write

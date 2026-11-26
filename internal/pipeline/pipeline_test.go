@@ -123,6 +123,9 @@ func TestCollectionAndFanout(t *testing.T) {
 					t.Fatalf("received %d metrics, want %d", len(lines), want)
 				}
 				joined := strings.Join(lines, "")
+				if strings.Count(joined, ",virtualServerIP=192.0.2.1,") != want || strings.Contains(joined, ",ip=") {
+					t.Fatalf("unexpected VS IP tags: %s", joined)
+				}
 				if tc.wantHTTP && (!strings.Contains(joined, "virtualServerHttpStats,") ||
 					!strings.Contains(joined, "requests=42,succ_response=9 ") ||
 					strings.Contains(joined, "label=")) {
@@ -200,10 +203,10 @@ func TestRealServerTopicFiltersAndPublishesMemberSnapshots(t *testing.T) {
 		case "/api/load_balance_virtual_server/get_trees":
 			io.WriteString(w, `{"payload":[
 				{"mkey":"prod-api","content-routing":"enable","children":[
-					{"mkey":"route","children":[{"mkey":"pool","children":[{"mkey":"1","real_server_id":"shared","current-status":"HEALTHY"}]}]}
+					{"mkey":"route","children":[{"mkey":"pool","children":[{"mkey":"1","real_server_id":"shared","address":"192.0.2.20","addr-type":"ipv4","current-status":"HEALTHY"}]}]}
 				]},
 				{"mkey":"prod-direct","content-routing":"disable","children":[
-					{"mkey":"pool","children":[{"mkey":"1","real_server_id":"shared","current-status":"UNHEALTHY"}]}
+					{"mkey":"pool","children":[{"mkey":"1","real_server_id":"shared","address":"192.0.2.21","address6":"2001:db8::21","addr-type":"ipv6","current-status":"UNHEALTHY"}]}
 				]},
 				{"mkey":"prod-other","children":[{"mkey":"ignored","children":[{"mkey":"1","real_server_id":"other"}]}]},
 				{"mkey":"test-api","children":[{"mkey":"ignored","children":[{"mkey":"1","real_server_id":"other"}]}]}]}`)
@@ -243,6 +246,7 @@ func TestRealServerTopicFiltersAndPublishesMemberSnapshots(t *testing.T) {
       burst: 20
       scrape_configs:
         - topic: rs_status
+          max_sessions: 2
           virtual_servers: ['prod-api$', 'prod-direct$', 'test-api$']
           tags:
             group: backends
@@ -262,6 +266,8 @@ func TestRealServerTopicFiltersAndPublishesMemberSnapshots(t *testing.T) {
 	defer mu.Unlock()
 	lines := output.String()
 	if memberCalls.Load() != 2 || strings.Count(lines, "realServerStatus,") != 2 ||
+		!strings.Contains(lines, ",realServerIP=192.0.2.20,") ||
+		!strings.Contains(lines, ",realServerIP=2001:db8::21,") || strings.Contains(lines, ",ip=") ||
 		!strings.Contains(lines, `virtualServerName=prod-other availability="HEALTHY",current_sessions=2,`) ||
 		!strings.Contains(lines, "contentRoutingName=route,") ||
 		!strings.Contains(lines, "contentRoutingName=N/A,") ||

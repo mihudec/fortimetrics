@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"net/url"
+	"slices"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mihudec/fortimetrics/internal/config"
@@ -43,6 +46,7 @@ func (c *Client) discoverMembers(ctx context.Context, topic config.Scrape) ([]po
 	}
 	var members []poolMember
 	seen := make(map[memberPath]bool)
+	selectedVS := make(map[string]bool)
 	addPool := func(vs, route string, pool topologyNode) {
 		if pool.Key == "" {
 			return
@@ -53,6 +57,7 @@ func (c *Client) discoverMembers(ctx context.Context, topic config.Scrape) ([]po
 				continue
 			}
 			seen[path] = true
+			selectedVS[vs] = true
 			members = append(members, poolMember{path: path, node: node})
 		}
 	}
@@ -84,7 +89,12 @@ func (c *Client) discoverMembers(ctx context.Context, topic config.Scrape) ([]po
 			}
 		}
 	}
-	c.log.Debugw("discovered real-server members", "members", len(members))
+	names := make([]string, 0, len(selectedVS))
+	for name := range selectedVS {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	c.log.Infow("discovered real-server members", "members", len(members), "virtual_servers", names)
 	return members, nil
 }
 
@@ -99,9 +109,9 @@ func (c *Client) collectMember(ctx context.Context, member poolMember) (metric.M
 	tags["realServerPoolName"] = path.pool
 	tags["poolMemberId"] = path.id
 	tags["realServerName"] = node.RealServer
-	tags["ip"] = node.Address
+	tags["realServerIP"] = node.Address
 	if node.AddressType == "ipv6" {
-		tags["ip"] = node.Address6
+		tags["realServerIP"] = node.Address6
 	}
 	tags["port"] = node.Port
 
@@ -126,31 +136,64 @@ func (c *Client) collectMember(ctx context.Context, member poolMember) (metric.M
 	return metric.Metric{Measurement: "realServerStatus", Tags: tags, Fields: fields, Timestamp: time.Now()}, err
 }
 
-// scrapeMembers polls serially. next is shared across sweeps so the pacing also
-// applies when a small set of members is polled in consecutive sweeps.
-func (c *Client) scrapeMembers(ctx context.Context, members []poolMember, next *time.Time, emit func(metric.Metric) error, report func(error)) error {
-	for _, member := range members {
-		if wait := time.Until(*next); wait > 0 && !sleep(ctx, wait) {
-			return ctx.Err()
-		}
+// Each worker has its own cooldown, retained across sweeps. All worker
+// requests also pass through the shared device limits in c.get.
+func (c *Client) scrapeMembers(ctx context.Context, members []poolMember, next []time.Time, emit func(metric.Metric) error, report func(error)) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	type result struct {
+		metric metric.Metric
+		err    error
+	}
+	results := make(chan result)
+	var cursor atomic.Int64
+	var workers sync.WaitGroup
+	for i := range min(len(next), len(members)) {
+		workers.Go(func() {
+			for ctx.Err() == nil {
+				index := cursor.Add(1) - 1
+				if index >= int64(len(members)) {
+					return
+				}
+				if wait := time.Until(next[i]); wait > 0 && !sleep(ctx, wait) {
+					return
+				}
+				m, err := c.collectMember(ctx, members[index])
+				next[i] = time.Now().Add(memberPollDelay)
+				select {
+				case results <- result{metric: m, err: err}:
+				case <-ctx.Done():
+					return
+				}
+			}
+		})
+	}
+	go func() {
+		workers.Wait()
+		close(results)
+	}()
+
+	// Keep callbacks serialized within the member sweep, including in -once.
+	var emitErr error
+	for r := range results {
 		if ctx.Err() != nil {
-			return ctx.Err()
+			continue
 		}
-		m, err := c.collectMember(ctx, member)
-		*next = time.Now().Add(memberPollDelay)
-		if ctx.Err() != nil {
-			return ctx.Err()
+		if r.err != nil {
+			report(r.err)
 		}
-		if err != nil {
-			report(err)
-		}
-		if len(m.Fields) > 0 {
-			if err := emit(m); err != nil {
-				return err
+		if len(r.metric.Fields) > 0 {
+			if err := emit(r.metric); err != nil {
+				emitErr = err
+				cancel()
 			}
 		}
 	}
-	return nil
+	if emitErr != nil {
+		return emitErr
+	}
+	return ctx.Err()
 }
 
 func (c *Client) pollMembers(ctx context.Context, topic config.Scrape, interval, refresh time.Duration, jitter float64, emit func(metric.Metric) error, report func(error)) {
@@ -158,7 +201,8 @@ func (c *Client) pollMembers(ctx context.Context, topic config.Scrape, interval,
 		return
 	}
 	var members []poolMember
-	var next, refreshAt time.Time
+	next := make([]time.Time, topic.SessionLimit())
+	var refreshAt time.Time
 	for ctx.Err() == nil {
 		start := time.Now()
 		if !start.Before(refreshAt) {
@@ -172,7 +216,7 @@ func (c *Client) pollMembers(ctx context.Context, topic config.Scrape, interval,
 			}
 			refreshAt = time.Now().Add(refresh)
 		}
-		if err := c.scrapeMembers(ctx, members, &next, emit, report); err != nil {
+		if err := c.scrapeMembers(ctx, members, next, emit, report); err != nil {
 			if ctx.Err() == nil {
 				report(err)
 			}

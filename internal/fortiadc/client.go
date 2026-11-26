@@ -10,6 +10,7 @@ import (
 	"net/http/cookiejar"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -221,7 +222,12 @@ func (c *Client) discover(ctx context.Context) ([]virtualServer, error) {
 			seen[vs.Name] = true
 		}
 	}
-	c.log.Debugw("discovered virtual servers", "matched", len(result), "total", len(servers))
+	names := make([]string, 0, len(result))
+	for _, vs := range result {
+		names = append(names, vs.Name)
+	}
+	slices.Sort(names)
+	c.log.Infow("discovered virtual servers", "matched", len(result), "total", len(servers), "virtual_servers", names)
 	return result, nil
 }
 
@@ -270,7 +276,7 @@ func (c *Client) collectVS(ctx context.Context, vs virtualServer, emit func(metr
 	}
 	tags := c.cfg.TopicTags("vs_status")
 	tags["virtualServerName"] = vs.Name
-	tags["ip"] = ip
+	tags["virtualServerIP"] = ip
 	fields := map[string]any{}
 	var stats map[string]any
 	e := c.get(ctx, "/api/status_history/vs_status", url.Values{"vsname": {vs.Name}}, &stats)
@@ -320,7 +326,7 @@ func (c *Client) collectVS(ctx context.Context, vs virtualServer, emit func(metr
 	}
 	tags = c.cfg.TopicTags("vs_http_stats")
 	tags["virtualServerName"] = vs.Name
-	tags["ip"] = ip
+	tags["virtualServerIP"] = ip
 	if e = emit(metric.Metric{Measurement: "virtualServerHttpStats", Tags: tags, Fields: fields, Timestamp: time.Now()}); e != nil {
 		return e
 	}

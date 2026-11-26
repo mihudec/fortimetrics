@@ -54,8 +54,8 @@ func (c *Client) Collect(ctx context.Context, emit func(metric.Metric) error) er
 		if err != nil {
 			errs = append(errs, err)
 		} else {
-			var next time.Time
-			err := c.scrapeMembers(ctx, members, &next, emit, func(err error) { errs = append(errs, err) })
+			next := make([]time.Time, topic.SessionLimit())
+			err := c.scrapeMembers(ctx, members, next, emit, func(err error) { errs = append(errs, err) })
 			if err != nil {
 				errs = append(errs, err)
 			}

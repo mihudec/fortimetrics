@@ -34,7 +34,7 @@ func TestPartialFailureAndIPv6(t *testing.T) {
 	if e == nil || !strings.Contains(e.Error(), "API error -1") {
 		t.Fatal(e)
 	}
-	if len(metrics) != 1 || metrics[0].Tags["ip"] != "2001:db8::1" || len(metrics[0].Fields) != 3 {
+	if len(metrics) != 1 || metrics[0].Tags["virtualServerIP"] != "2001:db8::1" || len(metrics[0].Fields) != 3 {
 		t.Fatalf("unexpected partial metrics: %+v", metrics)
 	}
 }
