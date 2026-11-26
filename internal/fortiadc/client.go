@@ -141,6 +141,7 @@ const virtualServerPath = "/api/load_balance_virtual_server"
 
 type virtualServer struct {
 	Name         string `json:"mkey"`
+	Type         string `json:"type"`
 	Address      string `json:"address"`
 	Address6     string `json:"address6"`
 	AddressType  string `json:"addr-type"`
@@ -307,6 +308,10 @@ func (c *Client) collectVS(ctx context.Context, vs virtualServer, emit func(metr
 		}
 	}
 	if !c.cfg.HTTPStats() {
+		return errors.Join(errs...)
+	}
+	if vs.Type != "l7-load-balance" {
+		c.log.Debugw("skipping HTTP statistics for VS without a Layer 7 type", "vs", vs.Name, "type", vs.Type)
 		return errors.Join(errs...)
 	}
 	fields, err = c.readHTTPStats(ctx, vs.Name)

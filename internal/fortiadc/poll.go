@@ -49,6 +49,18 @@ func (c *Client) Collect(ctx context.Context, emit func(metric.Metric) error) er
 		}()
 	}
 	wg.Wait()
+	if topic, ok := c.cfg.RealServerStats(); ok && ctx.Err() == nil {
+		members, err := c.discoverMembers(ctx, topic)
+		if err != nil {
+			errs = append(errs, err)
+		} else {
+			var next time.Time
+			err := c.scrapeMembers(ctx, members, &next, emit, func(err error) { errs = append(errs, err) })
+			if err != nil {
+				errs = append(errs, err)
+			}
+		}
+	}
 	return errors.Join(errs...)
 }
 
@@ -67,6 +79,13 @@ func (c *Client) Poll(ctx context.Context, emit func(metric.Metric) error, repor
 	jitter := 0.1
 	if c.cfg.ScrapeJitter != nil {
 		jitter = *c.cfg.ScrapeJitter
+	}
+	if topic, ok := c.cfg.RealServerStats(); ok {
+		var members sync.WaitGroup
+		members.Go(func() {
+			c.pollMembers(ctx, topic, interval, 10*interval, jitter, emit, report)
+		})
+		defer members.Wait()
 	}
 	c.poll(ctx, interval, 10*interval, jitter, emit, report)
 }

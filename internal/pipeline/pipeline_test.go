@@ -21,8 +21,16 @@ import (
 )
 
 func TestCollectionAndFanout(t *testing.T) {
-	for _, httpStats := range []bool{false, true} {
-		t.Run(fmt.Sprint(httpStats), func(t *testing.T) {
+	for _, tc := range []struct {
+		name, vsType         string
+		enableHTTP, wantHTTP bool
+	}{
+		{"disabled", "l7-load-balance", false, false},
+		{"layer7", "l7-load-balance", true, true},
+		{"layer4", "l4-load-balance", true, false},
+		{"unknown-layer", "", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			var logins, optional atomic.Int32
 			device := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path == "/api/user/login" {
@@ -39,7 +47,11 @@ func TestCollectionAndFanout(t *testing.T) {
 				}
 				switch r.URL.Path {
 				case "/api/load_balance_virtual_server":
-					io.WriteString(w, `{"payload":[{"mkey":"test vs","address":"192.0.2.1","status":"enable","availability":"HEALTHY"}]}`)
+					if r.URL.Query().Has("mkey") {
+						io.WriteString(w, `{"payload":{"mkey":"test vs","status":"enable","availability":"HEALTHY"}}`)
+					} else {
+						fmt.Fprintf(w, `{"payload":[{"mkey":"test vs","type":%q,"address":"192.0.2.1","status":"enable","availability":"HEALTHY"}]}`, tc.vsType)
+					}
 				case "/api/status_history/vs_status":
 					if r.URL.Query().Get("vsname") != "test vs" {
 						t.Error("wrong VS")
@@ -72,7 +84,7 @@ func TestCollectionAndFanout(t *testing.T) {
 				urls[i] = s.URL
 			}
 			topic := ""
-			if httpStats {
+			if tc.enableHTTP {
 				topic = "\n      scrape_configs:\n        - topic: vs_http_stats"
 			}
 			cfg, e := config.Load(strings.NewReader(fmt.Sprintf(`config:
@@ -100,7 +112,7 @@ func TestCollectionAndFanout(t *testing.T) {
 				t.Fatalf("logins = %d", logins.Load())
 			}
 			want := 1
-			if httpStats {
+			if tc.wantHTTP {
 				want = 2
 			}
 			if int(optional.Load()) != want-1 {
@@ -111,7 +123,7 @@ func TestCollectionAndFanout(t *testing.T) {
 					t.Fatalf("received %d metrics, want %d", len(lines), want)
 				}
 				joined := strings.Join(lines, "")
-				if httpStats && (!strings.Contains(joined, "virtualServerHttpStats,") ||
+				if tc.wantHTTP && (!strings.Contains(joined, "virtualServerHttpStats,") ||
 					!strings.Contains(joined, "requests=42,succ_response=9 ") ||
 					strings.Contains(joined, "label=")) {
 					t.Fatalf("unexpected HTTP counters: %s", joined)
@@ -172,5 +184,90 @@ func TestCustomCAForDeviceAndWriter(t *testing.T) {
 	}
 	if received.Load() != 1 {
 		t.Fatal("metric was not delivered")
+	}
+}
+
+func TestRealServerTopicFiltersAndPublishesMemberSnapshots(t *testing.T) {
+	var memberCalls atomic.Int32
+	device := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if q.Get("vdom") != "test-vdom" {
+			t.Error("unexpected VDOM")
+		}
+		switch r.URL.Path {
+		case "/api/load_balance_virtual_server":
+			io.WriteString(w, `{"payload":[{"mkey":"prod-api","availability":"HEALTHY"},{"mkey":"prod-other","availability":"HEALTHY"}]}`)
+		case "/api/load_balance_virtual_server/get_trees":
+			io.WriteString(w, `{"payload":[
+				{"mkey":"prod-api","content-routing":"enable","children":[
+					{"mkey":"route","children":[{"mkey":"pool","children":[{"mkey":"1","real_server_id":"shared","current-status":"HEALTHY"}]}]}
+				]},
+				{"mkey":"prod-direct","content-routing":"disable","children":[
+					{"mkey":"pool","children":[{"mkey":"1","real_server_id":"shared","current-status":"UNHEALTHY"}]}
+				]},
+				{"mkey":"prod-other","children":[{"mkey":"ignored","children":[{"mkey":"1","real_server_id":"other"}]}]},
+				{"mkey":"test-api","children":[{"mkey":"ignored","children":[{"mkey":"1","real_server_id":"other"}]}]}]}`)
+		case "/api/status_history/vs_status":
+			io.WriteString(w, `{"payload":{"current_sessions":2}}`)
+		case "/api/status_history/rs_status":
+			memberCalls.Add(1)
+			vs, route := q.Get("vsname"), q.Get("crname")
+			if q.Get("poolname") != "pool" || q.Get("member") != "1" || !q.Has("crname") ||
+				!((vs == "prod-api" && route == "route") || (vs == "prod-direct" && route == "")) {
+				t.Errorf("unexpected member request: %v", q)
+			}
+			io.WriteString(w, `{"payload":{"app_response":9,"current_sessions":4}}`)
+		default:
+			t.Errorf("unexpected API path %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer device.Close()
+	var mu sync.Mutex
+	var output strings.Builder
+	sink := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		io.Copy(&output, r.Body)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer sink.Close()
+	cfg, err := config.Load(strings.NewReader(fmt.Sprintf(`config:
+  targets:
+    - hostname: adc
+      base_url: %s
+      api_key: test
+      vdom: test-vdom
+      virtual_servers: ['prod-']
+      requests_per_second: 100
+      burst: 20
+      scrape_configs:
+        - topic: rs_status
+          virtual_servers: ['prod-api$', 'prod-direct$', 'test-api$']
+          tags:
+            group: backends
+  writers:
+    - type: http
+      url: %s
+`, device.URL, sink.URL)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := Run(ctx, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	lines := output.String()
+	if memberCalls.Load() != 2 || strings.Count(lines, "realServerStatus,") != 2 ||
+		!strings.Contains(lines, `virtualServerName=prod-other availability="HEALTHY",current_sessions=2,`) ||
+		!strings.Contains(lines, "contentRoutingName=route,") ||
+		!strings.Contains(lines, "contentRoutingName=N/A,") ||
+		!strings.Contains(lines, "group=backends,") ||
+		!strings.Contains(lines, `app_response=9,availability="HEALTHY",current_sessions=4,health=0 `) ||
+		!strings.Contains(lines, `app_response=9,availability="UNHEALTHY",current_sessions=4,health=4 `) {
+		t.Fatalf("unexpected output with %d member requests: %s", memberCalls.Load(), lines)
 	}
 }

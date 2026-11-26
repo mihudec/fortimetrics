@@ -47,8 +47,10 @@ type Target struct {
 	Patterns          []*regexp.Regexp  `yaml:"-"`
 }
 type Scrape struct {
-	Topic string            `yaml:"topic"`
-	Tags  map[string]string `yaml:"tags"`
+	Topic          string            `yaml:"topic"`
+	Tags           map[string]string `yaml:"tags"`
+	VirtualServers []string          `yaml:"virtual_servers"`
+	patterns       []*regexp.Regexp
 }
 type Writer struct {
 	CAFile    string  `yaml:"ca_file"`
@@ -164,17 +166,28 @@ func Load(r io.Reader) (Config, error) {
 		if t.ScrapeInterval < 1 || t.Timeout < 1 || int64(t.ScrapeInterval) > int64(time.Duration(1<<63-1)/time.Second) || int64(t.Timeout) > int64(time.Duration(1<<63-1)/time.Second) || t.RequestsPerSecond <= 0 || math.IsInf(t.RequestsPerSecond, 0) || math.IsNaN(t.RequestsPerSecond) || t.Burst < 1 {
 			return c, fmt.Errorf("target %d: invalid interval, timeout or rate limit", i)
 		}
-		for _, p := range t.VirtualServers {
-			re, e := regexp.Compile("^(?:" + p + ")")
-			if e != nil {
-				return c, fmt.Errorf("target %d: invalid virtual server expression: %w", i, e)
-			}
-			t.Patterns = append(t.Patterns, re)
+		patterns, err := compileVSPatterns(t.VirtualServers)
+		if err != nil {
+			return c, fmt.Errorf("target %d: %w", i, err)
 		}
+		t.Patterns = patterns
 		seen := map[string]bool{}
-		for _, s := range t.ScrapeConfigs {
-			if (s.Topic != "vs_status" && s.Topic != "vs_http_stats") || seen[s.Topic] {
-				return c, fmt.Errorf("target %d: unknown or duplicate scrape topic", i)
+		for j := range t.ScrapeConfigs {
+			s := &t.ScrapeConfigs[j]
+			switch s.Topic {
+			case "vs_status", "vs_http_stats", "rs_status":
+			default:
+				return c, fmt.Errorf("target %d: unknown scrape topic %q", i, s.Topic)
+			}
+			if seen[s.Topic] {
+				return c, fmt.Errorf("target %d: duplicate scrape topic %q", i, s.Topic)
+			}
+			if s.VirtualServers != nil && s.Topic != "rs_status" {
+				return c, fmt.Errorf("target %d: topic %q does not support virtual_servers", i, s.Topic)
+			}
+			s.patterns, err = compileVSPatterns(s.VirtualServers)
+			if err != nil {
+				return c, fmt.Errorf("target %d, topic %q: %w", i, s.Topic, err)
 			}
 			seen[s.Topic] = true
 		}
@@ -202,17 +215,47 @@ func Load(r io.Reader) (Config, error) {
 	}
 	return c, nil
 }
-func (t Target) Matches(name string) bool {
-	if len(t.Patterns) == 0 {
+func compileVSPatterns(expressions []string) ([]*regexp.Regexp, error) {
+	var patterns []*regexp.Regexp
+	for _, expression := range expressions {
+		pattern, err := regexp.Compile("^(?:" + expression + ")")
+		if err != nil {
+			return nil, fmt.Errorf("invalid virtual server expression: %w", err)
+		}
+		patterns = append(patterns, pattern)
+	}
+	return patterns, nil
+}
+
+func matchesVS(patterns []*regexp.Regexp, name string) bool {
+	if len(patterns) == 0 {
 		return true
 	}
-	for _, p := range t.Patterns {
-		if p.MatchString(name) {
+	for _, pattern := range patterns {
+		if pattern.MatchString(name) {
 			return true
 		}
 	}
 	return false
 }
+
+func (t Target) Matches(name string) bool {
+	return matchesVS(t.Patterns, name)
+}
+
+func (t Target) RealServerStats() (Scrape, bool) {
+	for _, scrape := range t.ScrapeConfigs {
+		if scrape.Topic == "rs_status" {
+			return scrape, true
+		}
+	}
+	return Scrape{}, false
+}
+
+func (s Scrape) Matches(name string) bool {
+	return matchesVS(s.patterns, name)
+}
+
 func (t Target) TopicTags(topic string) map[string]string {
 	tags := map[string]string{}
 	for k, v := range t.Tags {

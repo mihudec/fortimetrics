@@ -1,10 +1,10 @@
 # fortimetrics
 
-Fortimetrics collects FortiADC virtual server health, connection statistics, and optional FortiView HTTP counters. It sends batched Influx line protocol to Telegraf or prints it to stdout. The initial release supports FortiADC targets and reimplements the Python `fadcmetrics` and `fadcclient` collectors in Go.
+Fortimetrics collects FortiADC virtual server health and connection statistics, with optional FortiView HTTP counters and real-server member metrics. It sends batched Influx line protocol to Telegraf or prints it to stdout. The initial release supports FortiADC targets and reimplements the Python `fadcmetrics` and `fadcclient` collectors in Go.
 
 ## Quick start
 
-Download the binary and `SHA256SUMS` from [GitHub Releases](https://github.com/mihudec/fortimetrics/releases). Binaries are available for macOS and Linux on amd64 and arm64. Verify the matching checksum, then make the binary executable with `chmod +x`.
+Download the binary and `SHA256SUMS` from [GitHub Releases](https://github.com/mihudec/fortimetrics/releases). Binaries are available for macOS and Linux on amd64 and arm64. See the [changelog](CHANGELOG.md) for release changes. Verify the matching checksum, then make the binary executable with `chmod +x`.
 
 Copy [fortimetrics.example.yml](fortimetrics.example.yml) to `fortimetrics.yml`, set the appliance and writer addresses, and supply credentials through the environment. The example uses `FORTIADC_PASSWORD`.
 
@@ -53,7 +53,7 @@ Each target and HTTP writer accepts these optional settings independently:
 
 Every device has its own client, credentials, cookie jar, and token-bucket rate limiter, including login and retries. With username/password login, a 401 triggers one reauthentication. API-key authentication skips login and never reauthenticates on a 401/403. Discovery reads `/api/load_balance_virtual_server` at startup and every ten scrape intervals. Each matching VS has its own non-overlapping polling loop reading `/api/status_history/vs_status`. A slow VS does not hold up the next poll of other VSs, subject to the shared rate limit, request concurrency limit, and publishing backpressure. Discovery adds/removes pollers and updates metadata; a failed refresh retains the last good snapshot. Base `virtualServerStatus` metrics contain IP/name tags, configured `status`, health `availability`, and numeric session/traffic/timing fields returned by the status endpoint. If statistics fail, status metadata is still emitted and the scrape reports an error. Missing statistics are never fabricated as zero.
 
-`vs_http_stats` explicitly enables `/api/fortiview/get_vs_http`; numeric fields from `category_0` through `category_3` become the separate measurement `virtualServerHttpStats`. Counters encoded as numeric strings are accepted as well. Counter names retain the spelling returned by the appliance. `total_sessions` and other appliance values are passed through without assuming they are lifetime counters; no rates are derived.
+`vs_http_stats` enables `/api/fortiview/get_vs_http` for virtual servers discovered with type `l7-load-balance`. Layer 4 and unknown types still collect base VS metrics. For Layer 7 servers, numeric fields from `category_0` through `category_3` become the separate measurement `virtualServerHttpStats`. Counters encoded as numeric strings are accepted as well. Counter names retain the spelling returned by the appliance. `total_sessions` and other appliance values are passed through without assuming they are lifetime counters; no rates are derived.
 
 Collectors send typed `metric.Metric` structs through a bounded, blocking queue. A shared batcher groups up to `batch_size` metrics (default 500), flushing no later than `flush_interval` seconds (default 1) after the first metric arrives, provided a publish worker is available. Publish workers format each batch as newline-separated Influx line protocol with nanosecond timestamps and deliver the batch to every configured writer. HTTP writers use POST. FortiADC numeric fields in both VS measurements are emitted as floats, including whole-number values. This keeps their InfluxDB field types consistent across scrapes. Integers above 2⁵³ can lose precision as floats. The locally generated `health` field is also emitted as a float. Multiple workers can deliver out of order. Delivery is in-memory, best effort: failed POSTs are logged and their batches discarded, with no automatic POST retries, durable spool, or exactly-once guarantee. One unavailable device does not stop others. A slow sink causes backpressure. The batcher hands batches directly to workers without an extra buffered batch queue. A full queue or busy workers may extend delivery latency beyond the flush interval. Shutdown and `-once` flush the final partial batch within the existing 30-second drain deadline. Empty batches are never posted; invalid metrics are reported and skipped without losing valid metrics in the same batch. Set `batch_size: 1` to restore one metric per POST.
 
@@ -65,9 +65,25 @@ Per-target `max_sessions` defaults to 10 and limits concurrent device requests. 
 
 `-once` discovers and polls every matching VS concurrently exactly once without startup jitter, then drains publishing. Cancellation stops timers, rate-limit waits and requests, and joins all pollers before closing the queue. Metrics may arrive in completion order.
 
-The `health` field uses the same codes as the Python collector: `HEALTHY=0`, `DISABLE=1`, `MAINTAINED=2`, `NO_HEALTH_CHECK=3`, `UNHEALTHY=4`, `DEAD=5`; unrecognized status strings also map to 5. Existing string `status` and `availability` fields remain. Each VS poll requests current `availability` using `GET /api/load_balance_virtual_server?mkey=<name>&vdom=<vdom>` through the shared device limiter. If a detail object lacks availability, the collector reads the VS list again for that poll. If health cannot be fetched, the scrape reports an error and omits `availability` and `health` while publishing any available statistics. Real-server collection from the newer Python version is not included.
+The `health` field uses the same codes as the Python collector: `HEALTHY=0`, `DISABLE=1`, `MAINTAINED=2`, `NO_HEALTH_CHECK=3`, `UNHEALTHY=4`, `DEAD=5`; unrecognized status strings also map to 5. Existing string `status` and `availability` fields remain. Each VS poll requests current `availability` using `GET /api/load_balance_virtual_server?mkey=<name>&vdom=<vdom>` through the shared device limiter. If a detail object lacks availability, the collector reads the VS list again for that poll. If health cannot be fetched, the scrape reports an error and omits `availability` and `health` while publishing any available statistics.
 
 For debugging, add `- type: stdout` under `config.writers`, or use it as the only writer. Stdout prints one Influx line per metric. Logs go to stderr.
+
+## Real-server metrics
+
+Enable direct member polling for selected virtual servers under a target:
+
+```yaml
+scrape_configs:
+  - topic: rs_status
+    virtual_servers: ['^VS_PROD_']
+```
+
+The topic filter narrows the target's existing `virtual_servers` filter for real-server collection only. Omit it to include every VS allowed by the target. Regexes match from the start of the name. A prefix such as `VS_DOPRAVNI-` matches both the FE and BE servers. Use `$` when the end of the name must match. Base VS metrics remain enabled.
+
+The collector discovers members through `/api/load_balance_virtual_server/get_trees` and refreshes topology after ten scrape intervals, at the next member sweep. Each selected VS/route/pool/member is polled directly through `/api/status_history/rs_status`. Fortimetrics polls one member at a time per device and waits at least one second after each poll. These requests share the device’s existing HTTP rate limiter and concurrency limit. A long sweep can extend the effective interval, including in `-once` mode.
+
+`realServerStatus` contains numeric snapshot fields as floats, with health and member status from the latest topology refresh. Series identify the VS, content route, pool, member ID, backend name, IP, and port. Direct pools use `contentRoutingName=N/A`. Scheduled pools are skipped.
 
 ## Telegraf
 
@@ -88,7 +104,7 @@ Tagged releases publish Linux amd64 and arm64 images to GitHub Container Registr
 ```sh
 docker run --rm -e FORTIADC_PASSWORD \
   -v "$PWD/fortimetrics.yml:/etc/fortimetrics/config.yml:ro" \
-  ghcr.io/mihudec/fortimetrics:0.1.3
+  ghcr.io/mihudec/fortimetrics:0.2.0
 ```
 
 Pass your API-key environment variable instead if the target uses one. Use a Telegraf address reachable from the container. The container runs as UID 65532, which needs read access to the mounted YAML and any CA bundle.
@@ -98,11 +114,11 @@ Pass your API-key environment variable instead if the target uses one. Use a Tel
 Build from a checkout with Go 1.27.4. Go downloads the public `github.com/mihudec/gohttp` module at `v0.1.0`.
 
 ```sh
-make build VERSION=0.1.3    # dist/{macos,linux}/{amd64,arm64}/fortimetrics
+make build VERSION=0.2.0    # dist/{macos,linux}/{amd64,arm64}/fortimetrics
 make test                  # Go tests
 make check                 # go vet and race tests
 make clean                 # Remove dist/
 docker build -t fortimetrics:local .
 ```
 
-CI runs `make check` and builds and smoke-tests the container. Pushing an unprefixed version tag such as `0.1.3` builds the release binaries and checksums, publishes the multi-platform image under the full version and major/minor tags, and attaches the binaries to the GitHub release. Local tests use simulated FortiADC and Telegraf servers.
+CI runs `make check` and builds and smoke-tests the container. Pushing an unprefixed version tag such as `0.2.0` builds the release binaries and checksums, publishes the multi-platform image under the full version and major/minor tags, and attaches the binaries to the GitHub release. Local tests use simulated FortiADC and Telegraf servers.

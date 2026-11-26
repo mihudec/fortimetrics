@@ -29,6 +29,8 @@ config:
       scrape_configs:
         - topic: vs_status # base metrics are always collected
         # - topic: vs_http_stats
+        # - topic: rs_status
+        #   virtual_servers: ['^VS_PROD_']
   writers:
     - type: http
       url: http://127.0.0.1:8186/write
